@@ -107,9 +107,13 @@ if exist "%model_folder%\model.safetensors" (
 )
 endlocal
 echo %green%DINOv3 model%reset%
-powershell -Command "Start-BitsTransfer -Source '%model_url%' -Destination '%model_folder%\model.safetensors'" 2>nul
-powershell -Command "Start-BitsTransfer -Source '%config_url%' -Destination '%model_folder%\config.json'" 2>nul
-powershell -Command "Start-BitsTransfer -Source '%pre_config_url%' -Destination '%model_folder%\preprocessor_config.json'" 2>nul
+if not exist "%model_folder%\model.safetensors" (
+	powershell -Command "Start-BitsTransfer -Source '%model_url%' -Destination '%model_folder%\model.safetensors'" 2>nul
+	powershell -Command "Start-BitsTransfer -Source '%config_url%' -Destination '%model_folder%\config.json'" 2>nul
+	powershell -Command "Start-BitsTransfer -Source '%pre_config_url%' -Destination '%model_folder%\preprocessor_config.json'" 2>nul
+) else (
+	echo DINOv3 model already exists, skipping download.
+)
 if exist "%SITE_PACKAGES%\~*" powershell -Command "Get-ChildItem '%SITE_PACKAGES%' -Directory -ErrorAction SilentlyContinue | Where-Object {$_.Name -like '~*'} | Remove-Item -Recurse -Force"
 call :erase_folder "%SITE_PACKAGES%\o_voxel"
 call :erase_folder "%SITE_PACKAGES%\o_voxel-0.0.1.dist-info"
