@@ -24,10 +24,7 @@ if exist "%windir%\System32" set "path=%PATH%;%windir%\System32"
 if exist "%windir%\System32\WindowsPowerShell\v1.0" set "path=%PATH%;%windir%\System32\WindowsPowerShell\v1.0"
 if exist "%localappdata%\Microsoft\WindowsApps" set "path=%PATH%;%localappdata%\Microsoft\WindowsApps"
 
-if exist "ComfyUI" (
-	echo %warning%ComfyUI folder already exists. Move or remove it and run again.%reset%
-	pause&goto :eof
-)
+rem ComfyUI may already exist; clone step will be skipped in :install_comfyui
 
 set "SCRIPT_ROOT=%~dp0"
 set "SITE_PACKAGES=%SCRIPT_ROOT%.venv\Lib\site-packages"
@@ -60,7 +57,6 @@ echo.
 call :get_node https://github.com/Comfy-Org/ComfyUI-Manager comfyui-manager
 call :get_node https://github.com/city96/ComfyUI-GGUF ComfyUI-GGUF
 call :get_node https://github.com/1038lab/ComfyUI-RMBG comfyui-rmbg
-call :get_node https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite comfyui-videohelpersuite
 call :get_node https://github.com/kijai/ComfyUI-KJNodes comfyui-kjnodes
 
 if not exist ".\ComfyUI\custom_nodes\.disabled" mkdir ".\ComfyUI\custom_nodes\.disabled"
@@ -142,13 +138,18 @@ call :erase_folder "%SITE_PACKAGES%\nvdiffrec_render-0.0.0.dist-info"
 call :erase_folder "%SITE_PACKAGES%\flex_gemm"
 call :erase_folder "%SITE_PACKAGES%\flex_gemm-0.0.1.dist-info"
 echo %green%ComfyUI-Trellis2%reset%
-if exist "ComfyUI\custom_nodes\ComfyUI-Trellis2" rmdir /s /q "ComfyUI\custom_nodes\ComfyUI-Trellis2"
-git.exe clone https://github.com/visualbruno/ComfyUI-Trellis2 ComfyUI\custom_nodes\ComfyUI-Trellis2
-call "%VENV_PY%" -I -m pip install -r ComfyUI\custom_nodes\ComfyUI-Trellis2\requirements.txt --no-deps %PIPargs%
-call "%VENV_PY%" -I -m pip install --upgrade open3d %PIPargs%
-call "%VENV_PY%" -I -m pip install ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\cumesh-0.0.1-cp312-cp312-win_amd64.whl ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\nvdiffrast-0.4.0-cp312-cp312-win_amd64.whl ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\nvdiffrec_render-0.0.0-cp312-cp312-win_amd64.whl ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\flex_gemm-0.0.1-cp312-cp312-win_amd64.whl ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\o_voxel-0.0.1-cp312-cp312-win_amd64.whl %PIPargs%
-powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/visualbruno/CuMesh/main/cumesh/remeshing.py' -OutFile '%SITE_PACKAGES%\cumesh\remeshing.py'" 2>nul
-call "%VENV_PY%" -I -m pip install --force-reinstall numpy==1.26.4 --no-deps %PIPargs%
+if not exist "ComfyUI\custom_nodes\ComfyUI-Trellis2" (
+	git.exe clone https://github.com/visualbruno/ComfyUI-Trellis2 ComfyUI\custom_nodes\ComfyUI-Trellis2
+)
+if exist "ComfyUI\custom_nodes\ComfyUI-Trellis2" (
+	if exist "ComfyUI\custom_nodes\ComfyUI-Trellis2\requirements.txt" (
+		call "%VENV_PY%" -I -m pip install -r ComfyUI\custom_nodes\ComfyUI-Trellis2\requirements.txt --no-deps %PIPargs%
+	)
+	call "%VENV_PY%" -I -m pip install --upgrade open3d %PIPargs%
+	call "%VENV_PY%" -I -m pip install ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\cumesh-0.0.1-cp312-cp312-win_amd64.whl ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\nvdiffrast-0.4.0-cp312-cp312-win_amd64.whl ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\nvdiffrec_render-0.0.0-cp312-cp312-win_amd64.whl ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\flex_gemm-0.0.1-cp312-cp312-win_amd64.whl ComfyUI\custom_nodes\ComfyUI-Trellis2\wheels\Windows\Torch280\o_voxel-0.0.1-cp312-cp312-win_amd64.whl %PIPargs%
+	powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/visualbruno/CuMesh/main/cumesh/remeshing.py' -OutFile '%SITE_PACKAGES%\cumesh\remeshing.py'" 2>nul
+	call "%VENV_PY%" -I -m pip install --force-reinstall numpy==1.26.4 --no-deps %PIPargs%
+)
 goto :eof
 
 :download_trellis_microsoft_ckpts
@@ -182,9 +183,12 @@ if not exist "%model_folder%" mkdir "%model_folder%"
 echo %green%UltraShape model%reset%
 powershell -Command "Start-BitsTransfer -Source '%model_url%' -Destination '%model_folder%\%model_name%'" 2>nul
 echo %green%ComfyUI-UltraShape%reset%
-if exist "ComfyUI\custom_nodes\ComfyUI-UltraShape" rmdir /s /q "ComfyUI\custom_nodes\ComfyUI-UltraShape"
-git.exe clone https://github.com/Rizzlord/ComfyUI-UltraShape ComfyUI\custom_nodes\ComfyUI-UltraShape
-"%VENV_PY%" -I -m pip install "accelerate>=0.17.0" trimesh omegaconf einops pymeshlab rembg pytorch-lightning %PIPargs%
+if not exist "ComfyUI\custom_nodes\ComfyUI-UltraShape" (
+	git.exe clone https://github.com/Rizzlord/ComfyUI-UltraShape ComfyUI\custom_nodes\ComfyUI-UltraShape
+)
+if exist "ComfyUI\custom_nodes\ComfyUI-UltraShape" (
+	"%VENV_PY%" -I -m pip install "accelerate>=0.17.0" trimesh omegaconf einops pymeshlab rembg pytorch-lightning %PIPargs%
+)
 goto :eof
 
 :install_git
@@ -195,7 +199,9 @@ goto :eof
 
 :install_comfyui
 echo %green%ComfyUI%reset%
-git.exe clone https://github.com/Comfy-Org/ComfyUI ComfyUI
+if not exist "ComfyUI" (
+	git.exe clone https://github.com/Comfy-Org/ComfyUI ComfyUI
+)
 powershell -Command "[System.Net.ServicePointManager]::CheckCertificateRevocationList = $false"
 "%VENV_PY%" -I -m pip install uv==0.9.7 %PIPargs%
 "%VENV_PY%" -I -m pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128 %PIPargs%
@@ -210,8 +216,9 @@ goto :eof
 set "git_url=%~1"
 set "git_folder=%~2"
 echo %green%%git_folder%%reset%
-if exist "ComfyUI\custom_nodes\%git_folder%" rmdir /s /q "ComfyUI\custom_nodes\%git_folder%"
-git.exe clone %git_url% ComfyUI/custom_nodes/%git_folder%
+if not exist "ComfyUI\custom_nodes\%git_folder%" (
+	git.exe clone %git_url% ComfyUI/custom_nodes/%git_folder%
+)
 setlocal enabledelayedexpansion
 if exist ".\ComfyUI\custom_nodes\%git_folder%\requirements.txt" (
 	for %%F in (".\ComfyUI\custom_nodes\%git_folder%\requirements.txt") do set "sz=%%~zF"
