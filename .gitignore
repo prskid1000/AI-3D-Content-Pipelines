@@ -1,0 +1,22 @@
+# Virtual environment
+.venv/
+
+# Models directory
+models/
+
+# HuggingFace cache
+.cache/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
