@@ -65,7 +65,6 @@ call :install_flash_attention
 call :install_cubvh
 call :install_trellis2
 call :download_trellis_microsoft_ckpts
-call :install_ultrashape
 
 for /f "delims=" %%i in ('powershell -command "Get-Date -Format yyyy-MM-dd_HH:mm:ss"') do set end=%%i
 for /f "delims=" %%i in ('powershell -command "$s=[datetime]::ParseExact('%start%','yyyy-MM-dd_HH:mm:ss',$null); $e=[datetime]::ParseExact('%end%','yyyy-MM-dd_HH:mm:ss',$null); if($e -lt $s){$e=$e.AddDays(1)}; ($e-$s).TotalSeconds"') do set diff=%%i
@@ -171,23 +170,6 @@ for %%F in (slat_dec_gs_swin8_B_64l8gs32_fp16.json slat_dec_gs_swin8_B_64l8gs32_
     echo Downloading TRELLIS-image-large\ckpts\%%F
     powershell -Command "Start-BitsTransfer -Source '%base_hf%/TRELLIS-image-large/resolve/main/ckpts/%%F' -Destination '%dir_large%\%%F'" 2>nul
   )
-)
-goto :eof
-
-:install_ultrashape
-set "model_folder=ComfyUI\models\ultrashape"
-set "model_url=https://huggingface.co/infinith/UltraShape/resolve/main/ultrashape_v1.pt"
-set "model_name=ultrashape_v1.pt"
-powershell -Command "[System.Net.ServicePointManager]::CheckCertificateRevocationList = $false"
-if not exist "%model_folder%" mkdir "%model_folder%"
-echo %green%UltraShape model%reset%
-powershell -Command "Start-BitsTransfer -Source '%model_url%' -Destination '%model_folder%\%model_name%'" 2>nul
-echo %green%ComfyUI-UltraShape%reset%
-if not exist "ComfyUI\custom_nodes\ComfyUI-UltraShape" (
-	git.exe clone https://github.com/Rizzlord/ComfyUI-UltraShape ComfyUI\custom_nodes\ComfyUI-UltraShape
-)
-if exist "ComfyUI\custom_nodes\ComfyUI-UltraShape" (
-	"%VENV_PY%" -I -m pip install "accelerate>=0.17.0" trimesh omegaconf einops pymeshlab rembg pytorch-lightning %PIPargs%
 )
 goto :eof
 
