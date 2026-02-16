@@ -1,5 +1,5 @@
 @Echo off&&cd /D %~dp0
-set "CEI_Title=ComfyUI-Easy-Install by ivo v2.04.1"
+set "CEI_Title=..comfyui.3d by ivo v2.04.1"
 Title %CEI_Title%
 call :set_colors
 
@@ -33,7 +33,7 @@ set "SCRIPT_ROOT=%~dp0"
 set "SITE_PACKAGES=%SCRIPT_ROOT%.venv\Lib\site-packages"
 
 for /f "delims=" %%i in ('powershell -command "Get-Date -Format yyyy-MM-dd_HH:mm:ss"') do set start=%%i
-echo %green%ComfyUI-Easy-Install%reset%
+echo %green%..comfyui.3d%reset%
 echo.
 
 call :install_git
