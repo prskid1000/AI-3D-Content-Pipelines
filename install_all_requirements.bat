@@ -48,7 +48,6 @@ echo %green%Pre-install modules%reset%
 "%VENV_PY%" -I -m pip install scikit-build-core %PIPargs%
 "%VENV_PY%" -I -m pip install onnxruntime-gpu onnx %PIPargs%
 "%VENV_PY%" -I -m uv pip install flet %UVargs%
-"%VENV_PY%" -I -m pip install https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.24-cu128-Basic-win-20260208/llama_cpp_python-0.3.24+cu128.basic-cp312-cp312-win_amd64.whl %PIPargs%
 "%VENV_PY%" -I -m uv pip install stringzilla==3.12.6 transformers==4.57.6 %UVargs%
 echo %green%accelerate (>=0.17.0 for enable_model_cpu_offload, torch 2.8 compatible)%reset%
 "%VENV_PY%" -I -m pip install "accelerate>=0.17.0" %PIPargs%
