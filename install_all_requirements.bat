@@ -45,7 +45,10 @@ echo.
 call :install_comfyui
 
 echo %green%Pre-install modules%reset%
+"%VENV_PY%" -I -m pip install --upgrade pip %PIPargs%
 "%VENV_PY%" -I -m pip install scikit-build-core %PIPargs%
+"%VENV_PY%" -I -m pip install "scikit-image>=0.21.0,<0.23.0" %PIPargs%
+"%VENV_PY%" -I -m pip install msvc-runtime "pooch>=1.8.2,<2.0.0" "pillow>=12.1.0,<13.0.0" %PIPargs%
 "%VENV_PY%" -I -m pip install onnxruntime-gpu onnx %PIPargs%
 "%VENV_PY%" -I -m uv pip install flet %UVargs%
 "%VENV_PY%" -I -m uv pip install stringzilla==3.12.6 transformers==4.57.6 %UVargs%
