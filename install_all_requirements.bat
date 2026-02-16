@@ -66,6 +66,7 @@ call :get_node https://github.com/kijai/ComfyUI-KJNodes comfyui-kjnodes
 if not exist ".\ComfyUI\custom_nodes\.disabled" mkdir ".\ComfyUI\custom_nodes\.disabled"
 
 call :install_flash_attention
+call :install_cubvh
 call :install_trellis2
 call :download_trellis_microsoft_ckpts
 call :install_ultrashape
@@ -95,6 +96,19 @@ goto :eof
 
 :erase_folder
 if exist "%~1" rmdir /s /q "%~1"
+goto :eof
+
+:install_cubvh
+echo %green%cubvh%reset%
+if not exist "%~dp0cubvh" (
+	git clone --recursive https://github.com/ashawkey/cubvh "%~dp0cubvh"
+)
+if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" (
+	call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+)
+pushd "%~dp0cubvh"
+"%VENV_PY%" -m pip install . --no-build-isolation %PIPargs%
+popd
 goto :eof
 
 :install_trellis2
