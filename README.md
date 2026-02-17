@@ -78,6 +78,29 @@ Images (gen.3d/input/) → Scale (max 1024) → ComfyUI/input
 cd gen.3d && python generate.py
 ```
 
+### Resumable Operations
+
+The 3D script supports **resumable processing** (skip completed images and continue after interruptions).
+
+```bash
+cd gen.3d/scripts
+
+# Normal resumable run (processes all images, skips completed ones)
+python 1.image2mesh.py
+
+# Force start from scratch (clears checkpoint)
+python 1.image2mesh.py --force-start
+
+# Regenerate everything (ignore completed)
+python 1.image2mesh.py --force
+
+# List completed stems from checkpoint
+python 1.image2mesh.py --list-completed
+```
+
+Checkpoint location:
+- `gen.3d/output/tracking/1.image2mesh.state.json`
+
 ### Running the Script Only (ComfyUI already running)
 
 ```bash
@@ -107,3 +130,41 @@ python 1.image2mesh.py --comfyui-url http://127.0.0.1:8188/
 - **Naming** – Output GLBs use the image filename stem (e.g. `robot_model.png` → `robot_model.glb`, `robot_model_Textured.glb`, etc.)
 - **Copy** – All Trellis2 export variants (WhiteMesh, Refined, Textured) are copied from ComfyUI output to `gen.3d/output`
 - **Wait for completion** – Script polls ComfyUI history until the prompt finishes (with timeout), then copies outputs and exits
+
+---
+
+# 📋 PIPELINE DOCUMENTATION
+
+## 🧊 3D PIPELINE (gen.3d/)
+
+**Purpose**: Convert images into 3D meshes (GLB) using ComfyUI + Trellis2.
+
+### Workflow Overview
+
+```
+Input images → scale (max 1024) → Trellis2 workflow → GLB exports → copy to gen.3d/output
+```
+
+### Outputs
+
+For an input image `robot_model.png` the pipeline typically produces:
+
+- **Primary**: `gen.3d/output/robot_model.glb` (usually the newest/“Textured” export)
+- **Variants** (if produced by workflow):  
+  - `gen.3d/output/robot_model_WhiteMesh.glb`  
+  - `gen.3d/output/robot_model_Refined.glb`  
+  - `gen.3d/output/robot_model_Textured.glb`  
+
+### Orchestrator Notes (`gen.3d/generate.py`)
+
+`generate.py` follows the same runner pattern as the main project:
+- Empties ComfyUI `input/` and `output/` at the start of a run
+- Starts ComfyUI (and includes LM Studio start/stop hooks for parity, even if not required by the current 3D script)
+- Runs `scripts/1.image2mesh.py`
+- Stops services and writes `gen.3d/log.txt`
+
+It also tracks core-file changes and can clear `gen.3d/output/` when these change:
+- `workflow/assets3d.json`
+- `scripts/1.image2mesh.py`
+- `generate.py`
+
