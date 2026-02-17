@@ -3,12 +3,15 @@ import sys
 import time
 import subprocess
 import signal
+import shlex
 import shutil
 import socket
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse, urljoin
 import atexit
+import hashlib
+import json
 
 
 # Simple global log timing stats
@@ -58,6 +61,7 @@ SCRIPTS = [
 SCRIPTS_DIR = "scripts"
 
 NEEDS_COMFYUI = {"1.image2mesh.py"}
+NEEDS_LMSTUDIO = set()  # keep empty unless a script needs LM Studio
 
 # Centralized non-interactive defaults (only change this file)
 SCRIPT_ARGS = {
@@ -73,6 +77,182 @@ def resolve_comfyui_dir(base_dir: str) -> str:
     if alt and os.path.exists(os.path.join(alt, "main.py")):
         return alt
     return candidate
+
+
+def calculate_file_hash(filepath: str) -> str:
+    """Calculate SHA-256 hash of a file."""
+    hasher = hashlib.sha256()
+    try:
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception as ex:
+        raise RuntimeError(f"Failed to hash file {filepath}: {ex}")
+
+
+def check_and_clean_tracking_if_files_changed(
+    base_dir: str,
+    log_handle,
+    tracked_files: list[tuple[str, str]],  # List of (file_path, hash_key) tuples
+    tracking_json_file: str,
+    output_dirs: list[str] = None,
+) -> bool:
+    """
+    Check if any tracked file has changed and delete output directories if it has.
+
+    Args:
+        base_dir: Base directory for relative paths
+        log_handle: Log file handle
+        tracked_files: List of tuples (relative_file_path, hash_key) to track
+        tracking_json_file: Path to tracking JSON file
+        output_dirs: List of output directories to clear if files changed
+
+    Returns:
+        bool: True if successful, False on error
+    """
+    if not tracked_files:
+        log_handle.write("No files to track. Skipping tracking check.\n")
+        log_handle.flush()
+        return True
+
+    current_hashes: dict[str, str] = {}
+    for rel_path, hash_key in tracked_files:
+        file_path = os.path.join(base_dir, rel_path) if not os.path.isabs(rel_path) else rel_path
+        if not os.path.exists(file_path):
+            log_handle.write(f"Tracked file not found: {rel_path}. Skipping.\n")
+            log_handle.flush()
+            continue
+        try:
+            current_hashes[hash_key] = calculate_file_hash(file_path)
+        except RuntimeError as ex:
+            log_handle.write(f"ERROR: {ex}\n")
+            log_handle.flush()
+            return False
+
+    if not current_hashes:
+        log_handle.write("No valid tracked files found. Skipping tracking check.\n")
+        log_handle.flush()
+        return True
+
+    tracking_dir = os.path.dirname(tracking_json_file)
+    if output_dirs is None:
+        output_dirs = [os.path.dirname(tracking_dir)]
+
+    if not os.path.exists(tracking_dir):
+        os.makedirs(tracking_dir, exist_ok=True)
+        tracking_data = {
+            "file_hashes": current_hashes,
+            "last_checked": time.time(),
+            "tracked_files": {key: rel_path for rel_path, key in tracked_files},
+        }
+        try:
+            with open(tracking_json_file, "w", encoding="utf-8") as f:
+                json.dump(tracking_data, f, indent=2)
+            log_handle.write("Tracking directory created with file hashes.\n")
+        except Exception as ex:
+            log_handle.write(f"WARNING: Failed to save tracking JSON: {ex}\n")
+        log_handle.flush()
+        return True
+
+    if not os.path.exists(tracking_json_file):
+        log_handle.write("No tracking JSON found. Deleting old output format.\n")
+        try:
+            for out_dir in output_dirs:
+                shutil.rmtree(out_dir, ignore_errors=True)
+            os.makedirs(tracking_dir, exist_ok=True)
+            tracking_data = {
+                "file_hashes": current_hashes,
+                "last_checked": time.time(),
+                "tracked_files": {key: rel_path for rel_path, key in tracked_files},
+            }
+            with open(tracking_json_file, "w", encoding="utf-8") as f:
+                json.dump(tracking_data, f, indent=2)
+            log_handle.write("Output directories recreated with file hashes.\n")
+        except Exception as ex:
+            log_handle.write(f"WARNING: Failed to recreate output: {ex}\n")
+            log_handle.flush()
+            return False
+        log_handle.flush()
+        return True
+
+    try:
+        with open(tracking_json_file, "r", encoding="utf-8") as f:
+            tracking_data = json.load(f)
+        stored_hashes = tracking_data.get("file_hashes", {})
+    except Exception as ex:
+        log_handle.write(f"WARNING: Failed to read tracking JSON: {ex}. Deleting output.\n")
+        log_handle.flush()
+        try:
+            for out_dir in output_dirs:
+                shutil.rmtree(out_dir, ignore_errors=True)
+            os.makedirs(tracking_dir, exist_ok=True)
+            tracking_data = {
+                "file_hashes": current_hashes,
+                "last_checked": time.time(),
+                "tracked_files": {key: rel_path for rel_path, key in tracked_files},
+            }
+            with open(tracking_json_file, "w", encoding="utf-8") as f:
+                json.dump(tracking_data, f, indent=2)
+        except Exception:
+            pass
+        return False
+
+    hashes_changed = False
+    for hash_key, current_hash in current_hashes.items():
+        stored_hash = stored_hashes.get(hash_key, "")
+        if stored_hash != current_hash:
+            hashes_changed = True
+            log_handle.write(
+                f"File hash changed for key '{hash_key}': {stored_hash[:16]}... -> {current_hash[:16]}...\n"
+            )
+            break
+
+    if hashes_changed:
+        try:
+            for out_dir in output_dirs:
+                shutil.rmtree(out_dir, ignore_errors=True)
+            os.makedirs(tracking_dir, exist_ok=True)
+            tracking_data = {
+                "file_hashes": current_hashes,
+                "last_checked": time.time(),
+                "tracked_files": {key: rel_path for rel_path, key in tracked_files},
+            }
+            with open(tracking_json_file, "w", encoding="utf-8") as f:
+                json.dump(tracking_data, f, indent=2)
+            log_handle.write(
+                f"Tracked file content changed. Deleted and recreated output directories: {output_dirs}\n"
+            )
+        except Exception as ex:
+            log_handle.write(f"WARNING: Failed to delete output directories: {ex}\n")
+            log_handle.flush()
+            return False
+    else:
+        log_handle.write("All tracked files unchanged. Preserving output directories.\n")
+
+    log_handle.flush()
+    return True
+
+
+def check_and_clean_tracking_if_assets_changed(base_dir: str, log_handle) -> bool:
+    """
+    3D pipeline tracking: if core workflow/scripts change, clear gen.3d/output so reruns are consistent.
+    Unlike gen.image, this does NOT touch any other pipeline outputs.
+    """
+    tracking_dir = os.path.join(base_dir, "output", "tracking")
+    tracking_json_file = os.path.join(tracking_dir, "generate.state.json")
+
+    tracked_files = [
+        ("workflow/assets3d.json", "workflow_assets3d"),
+        ("scripts/1.image2mesh.py", "script_image2mesh"),
+        ("generate.py", "orchestrator_generate"),
+    ]
+
+    output_dirs = [os.path.join(base_dir, "output")]
+
+    return check_and_clean_tracking_if_files_changed(
+        base_dir, log_handle, tracked_files, tracking_json_file, output_dirs=output_dirs
+    )
 
 
 def empty_comfyui_folders(base_dir: str, log_handle) -> bool:
@@ -287,6 +467,193 @@ def run_script(script_name: str, working_dir: str, log_handle) -> int:
     return result.returncode
 
 
+def start_lmstudio(log_handle) -> bool:
+    cmd_env = os.environ.get("LM_STUDIO_CMD")
+    if cmd_env:
+        try:
+            base_cmd = shlex.split(cmd_env, posix=False)
+        except Exception:
+            base_cmd = [cmd_env]
+    else:
+        if shutil.which("lms"):
+            base_cmd = ["lms"]
+        else:
+            if os.name == "nt":
+                userprofile = os.environ.get("USERPROFILE", "")
+                candidate = os.path.join(userprofile, ".lmstudio", "bin", "lms.exe")
+            else:
+                candidate = os.path.expanduser(os.path.join("~", ".lmstudio", "bin", "lms"))
+            base_cmd = [candidate]
+
+    args = base_cmd + ["server", "start"]
+
+    log_handle.write("Starting LM Studio backend via lms CLI...\n")
+    log_handle.write("Command: " + " ".join(args) + "\n")
+    log_handle.flush()
+
+    creation_flags = 0
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    try:
+        result = subprocess.run(
+            args,
+            stdout=log_handle,
+            stderr=log_handle,
+            text=True,
+            creationflags=creation_flags,
+        )
+        if result.returncode == 0:
+            return True
+        log_handle.write(f"ERROR: lms server start exited with {result.returncode}\n")
+        log_handle.flush()
+        return False
+    except FileNotFoundError as ex:
+        log_handle.write(f"ERROR: Failed to start LM Studio. Command not found: {args[0]} ({ex})\n")
+        log_handle.flush()
+        return False
+    except Exception as ex:
+        log_handle.write(f"ERROR: Failed to start LM Studio: {ex}\n")
+        log_handle.flush()
+        return False
+
+
+def unload_lmstudio_all_models(log_handle) -> None:
+    cmd_env = os.environ.get("LM_STUDIO_CMD")
+    if cmd_env:
+        try:
+            base_cmd = shlex.split(cmd_env, posix=False)
+        except Exception:
+            base_cmd = [cmd_env]
+    else:
+        if shutil.which("lms"):
+            base_cmd = ["lms"]
+        else:
+            if os.name == "nt":
+                userprofile = os.environ.get("USERPROFILE", "")
+                candidate = os.path.join(userprofile, ".lmstudio", "bin", "lms.exe")
+            else:
+                candidate = os.path.expanduser(os.path.join("~", ".lmstudio", "bin", "lms"))
+            base_cmd = [candidate]
+
+    args = base_cmd + ["unload", "--all"]
+
+    log_handle.write("Unloading all models from LM Studio...\n")
+    log_handle.write("Command: " + " ".join(args) + "\n")
+    log_handle.flush()
+
+    creation_flags = 0
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    try:
+        result = subprocess.run(
+            args,
+            stdout=log_handle,
+            stderr=log_handle,
+            text=True,
+            creationflags=creation_flags,
+        )
+        if result.returncode != 0:
+            log_handle.write(f"WARNING: 'lms unload --all' exited with code {result.returncode}.\n")
+            log_handle.flush()
+    except FileNotFoundError as ex:
+        log_handle.write(f"WARNING: Could not run lms unload: {args[0]} not found ({ex}).\n")
+        log_handle.flush()
+    except Exception as ex:
+        log_handle.write(f"WARNING: Failed to unload LM Studio models: {ex}\n")
+        log_handle.flush()
+
+
+def stop_lmstudio(log_handle) -> None:
+    cmd_env = os.environ.get("LM_STUDIO_CMD")
+    if cmd_env:
+        try:
+            base_cmd = shlex.split(cmd_env, posix=False)
+        except Exception:
+            base_cmd = [cmd_env]
+    else:
+        if shutil.which("lms"):
+            base_cmd = ["lms"]
+        else:
+            if os.name == "nt":
+                userprofile = os.environ.get("USERPROFILE", "")
+                candidate = os.path.join(userprofile, ".lmstudio", "bin", "lms.exe")
+            else:
+                candidate = os.path.expanduser(os.path.join("~", ".lmstudio", "bin", "lms"))
+            base_cmd = [candidate]
+
+    args = base_cmd + ["server", "stop"]
+
+    log_handle.write("Stopping LM Studio backend via lms CLI...\n")
+    log_handle.write("Command: " + " ".join(args) + "\n")
+    log_handle.flush()
+
+    creation_flags = 0
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    try:
+        unload_lmstudio_all_models(log_handle)
+
+        result = subprocess.run(
+            args,
+            stdout=log_handle,
+            stderr=log_handle,
+            text=True,
+            creationflags=creation_flags,
+        )
+        if result.returncode != 0:
+            log_handle.write(f"WARNING: 'lms server stop' exited with code {result.returncode}.\n")
+            log_handle.flush()
+        wait_for_lmstudio_stopped(log_handle)
+    except Exception as ex:
+        log_handle.write(f"WARNING: Failed to stop LM Studio cleanly: {ex}\n")
+        log_handle.flush()
+
+
+def wait_for_lmstudio_ready(log_handle, interval_seconds: int = 15) -> bool:
+    base_url = os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (1234 if (parsed.scheme or "http") == "http" else 1234)
+    models_url = urljoin(base_url if base_url.endswith("/") else base_url + "/", "models")
+
+    start_ts = time.perf_counter()
+    attempt = 0
+    while True:
+        attempt += 1
+        socket_ok = _tcp_connect(host, port, timeout=3.0)
+        http_ok = _http_probe(models_url, timeout=3.0) if socket_ok else False
+
+        if socket_ok and http_ok:
+            elapsed = time.perf_counter() - start_ts
+            log_handle.write(f"LM Studio is ready after {elapsed:.1f}s (attempt {attempt}).\n")
+            log_handle.flush()
+            return True
+
+        log_handle.write(f"LM Studio not ready yet (attempt {attempt}). Retrying in {interval_seconds}s...\n")
+        log_handle.flush()
+        time.sleep(interval_seconds)
+
+
+def wait_for_lmstudio_stopped(log_handle, interval_seconds: int = 3) -> None:
+    base_url = os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (1234 if (parsed.scheme or "http") == "http" else 1234)
+    attempts = 0
+    while True:
+        attempts += 1
+        if not _tcp_connect(host, port, timeout=1.0):
+            log_handle.write(f"LM Studio appears stopped (after {attempts} checks).\n")
+            log_handle.flush()
+            return
+        log_handle.write("LM Studio still responding; waiting for shutdown...\n")
+        log_handle.flush()
+        time.sleep(interval_seconds)
+
+
 def main() -> int:
     base_dir = os.path.dirname(os.path.abspath(__file__))
     log_path = os.path.join(base_dir, "log.txt")
@@ -300,13 +667,22 @@ def main() -> int:
 
         empty_comfyui_folders(base_dir, log)
 
+        # 3D tracking: clear gen.3d/output if workflow/scripts changed
+        check_and_clean_tracking_if_assets_changed(base_dir, log)
+
         comfy_proc = None
+        lmstudio_active = False
 
         def _cleanup_services():
-            nonlocal comfy_proc
-            if comfy_proc is not None:
-                stop_comfyui(comfy_proc, log)
-                comfy_proc = None
+            nonlocal comfy_proc, lmstudio_active
+            try:
+                if comfy_proc is not None:
+                    stop_comfyui(comfy_proc, log)
+                    comfy_proc = None
+            finally:
+                if lmstudio_active:
+                    stop_lmstudio(log)
+                    lmstudio_active = False
 
         atexit.register(_cleanup_services)
 
@@ -356,41 +732,79 @@ def main() -> int:
 
             script_name = os.path.basename(script)
             needs_comfy = script_name in NEEDS_COMFYUI
+            needs_lms = script_name in NEEDS_LMSTUDIO
 
             if needs_comfy and comfy_proc is None:
                 comfy_proc = start_comfyui(base_dir, log)
                 if comfy_proc is None:
                     log.write("ABORTING: Could not start ComfyUI backend.\n")
                     log.flush()
+                    if lmstudio_active:
+                        stop_lmstudio(log)
+                        lmstudio_active = False
                     return 1
                 log.write("Waiting for ComfyUI to become ready (polling every 15s)...\n")
                 log.flush()
                 if not wait_for_comfyui_ready(comfy_proc, log):
                     if comfy_proc is not None:
                         stop_comfyui(comfy_proc, log)
+                    if lmstudio_active:
+                        stop_lmstudio(log)
+                        lmstudio_active = False
+                    return 1
+
+            if needs_lms and not lmstudio_active:
+                lms_ok = start_lmstudio(log)
+                if not lms_ok:
+                    if comfy_proc is not None:
+                        stop_comfyui(comfy_proc, log)
+                        comfy_proc = None
+                    log.write("ABORTING: Could not start LM Studio backend.\n")
+                    log.flush()
+                    return 1
+                lmstudio_active = True
+                log.write("Waiting for LM Studio to become ready (polling every 15s)...\n")
+                log.flush()
+                if not wait_for_lmstudio_ready(log):
+                    if comfy_proc is not None:
+                        stop_comfyui(comfy_proc, log)
+                        comfy_proc = None
+                    stop_lmstudio(log)
+                    lmstudio_active = False
                     return 1
 
             code = run_script(script_path, base_dir, log)
 
             next_needs_comfy = False
+            next_needs_lms = False
             if idx + 1 < len(SCRIPTS):
                 next_script_name = os.path.basename(SCRIPTS[idx + 1])
                 next_needs_comfy = next_script_name in NEEDS_COMFYUI
+                next_needs_lms = next_script_name in NEEDS_LMSTUDIO
 
             if needs_comfy and not next_needs_comfy and comfy_proc is not None:
                 stop_comfyui(comfy_proc, log)
                 comfy_proc = None
+            if needs_lms and not next_needs_lms and lmstudio_active:
+                stop_lmstudio(log)
+                lmstudio_active = False
 
             if code != 0:
                 if comfy_proc is not None:
                     stop_comfyui(comfy_proc, log)
                     comfy_proc = None
+                if lmstudio_active:
+                    stop_lmstudio(log)
+                    lmstudio_active = False
                 log.write(f"ABORTING: {script} exited with code {code}.\n")
                 log.flush()
                 return code
 
         if comfy_proc is not None:
             stop_comfyui(comfy_proc, log)
+        if lmstudio_active:
+            stop_lmstudio(log)
+            lmstudio_active = False
 
         total_log_time = LOG_STATS["write_seconds"] + LOG_STATS["flush_seconds"]
         total_runtime = max(0.0, time.perf_counter() - workflow_start_perf)

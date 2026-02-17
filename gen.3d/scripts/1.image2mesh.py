@@ -19,6 +19,10 @@ print = partial(_builtins.print, flush=True)
 # Scale image so max(width, height) == this before sending to ComfyUI (aspect ratio preserved)
 MAX_IMAGE_SIZE = 1024
 
+# Resumable processing (skip already-generated meshes, resume after interrupt)
+ENABLE_RESUMABLE_MODE = True
+CLEANUP_TRACKING_FILES = False  # Set True to delete tracking JSON after successful run
+
 # Supported image extensions (lowercase)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga"}
 
@@ -51,6 +55,81 @@ def get_image_files(input_dir: str) -> list[tuple[str, str]]:
             stem = Path(name).stem
             out.append((p, stem))
     return out
+
+
+class ResumableState:
+    """Manages resumable state for image-to-mesh generation (skip completed, resume after interrupt)."""
+
+    def __init__(self, checkpoint_dir: str, script_name: str, force_start: bool = False):
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.state_file = self.checkpoint_dir / f"{script_name}.state.json"
+        if force_start and self.state_file.exists():
+            try:
+                self.state_file.unlink()
+                print("Force start enabled - removed existing checkpoint")
+            except Exception as ex:
+                print(f"WARNING: Failed to remove checkpoint for force start: {ex}")
+        self.state = self._load_state()
+
+    def _load_state(self) -> dict:
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as ex:
+                print(f"WARNING: Failed to load checkpoint file: {ex}")
+        return {"meshes": {"completed": [], "results": {}}}
+
+    def _save_state(self):
+        try:
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, indent=2, ensure_ascii=False)
+        except Exception as ex:
+            print(f"WARNING: Failed to save checkpoint: {ex}")
+
+    def is_mesh_complete(self, stem: str) -> bool:
+        """True if this stem was completed and the output file still exists."""
+        if stem not in self.state["meshes"]["results"]:
+            return False
+        path = self.state["meshes"]["results"][stem].get("path", "")
+        return bool(path and os.path.exists(path))
+
+    def set_mesh_result(self, stem: str, path: str):
+        self.state["meshes"]["results"][stem] = {"path": path}
+        if stem not in self.state["meshes"]["completed"]:
+            self.state["meshes"]["completed"].append(stem)
+        self._save_state()
+
+    def validate_and_cleanup_results(self, output_dir: str) -> int:
+        """Remove completed entries whose output file no longer exists. Returns count removed."""
+        removed = 0
+        for stem in list(self.state["meshes"]["completed"]):
+            res = self.state["meshes"]["results"].get(stem, {})
+            path = res.get("path", "")
+            if not path or not os.path.exists(path):
+                if stem in self.state["meshes"]["completed"]:
+                    self.state["meshes"]["completed"].remove(stem)
+                if stem in self.state["meshes"]["results"]:
+                    del self.state["meshes"]["results"][stem]
+                removed += 1
+        if removed:
+            self._save_state()
+        return removed
+
+    def get_progress_summary(self) -> str:
+        completed = len(self.state["meshes"]["completed"])
+        return f"Progress: Meshes completed {completed}"
+
+    def cleanup(self):
+        try:
+            if CLEANUP_TRACKING_FILES and self.state_file.exists():
+                self.state_file.unlink()
+                print("All operations completed - tracking file removed")
+            else:
+                print("All operations completed - tracking file preserved")
+        except Exception as ex:
+            print(f"WARNING: Error in cleanup: {ex}")
 
 
 class Image2MeshGenerator:
@@ -288,8 +367,13 @@ class Image2MeshGenerator:
             return None
         return primary_out
 
-    def process_all(self, input_dir: str) -> dict[str, str]:
-        """Process all images in input_dir. Returns {stem: output_glb_path}."""
+    def process_all(
+        self,
+        input_dir: str,
+        resumable_state: ResumableState | None = None,
+        force_regenerate: bool = False,
+    ) -> dict[str, str]:
+        """Process all images in input_dir. Skips completed stems if resumable_state provided. Returns {stem: output_glb_path}."""
         images = get_image_files(input_dir)
         if not images:
             print(f"No image files found in {input_dir} (extensions: {IMAGE_EXTENSIONS})")
@@ -297,11 +381,34 @@ class Image2MeshGenerator:
         print(f"Found {len(images)} image(s) in {input_dir}")
         print(f"ComfyUI output folder: {self.comfyui_output_dir}")
         print(f"gen.3d output folder:  {self.output_dir}")
+
+        if resumable_state:
+            resumable_state.validate_and_cleanup_results(self.output_dir)
+            completed_stems = {stem for image_path, stem in images if resumable_state.is_mesh_complete(stem)}
+        else:
+            completed_stems = set()
+
+        to_process = [(image_path, stem) for image_path, stem in images if force_regenerate or stem not in completed_stems]
+        if completed_stems and not force_regenerate:
+            print(f"Resumable: skipping {len(completed_stems)} already completed: {sorted(completed_stems)}")
+        if not to_process:
+            print("All meshes already generated.")
+            return {stem: resumable_state.state["meshes"]["results"][stem]["path"] for stem in completed_stems} if resumable_state else {}
+
+        print(f"Processing {len(to_process)} image(s), skipped {len(completed_stems)}")
         results = {}
-        for image_path, stem in images:
+        for image_path, stem in to_process:
             out_path = self.process_one(image_path, stem)
             if out_path:
                 results[stem] = out_path
+                if resumable_state:
+                    resumable_state.set_mesh_result(stem, out_path)
+        # Include previously completed in results for summary
+        if resumable_state:
+            for stem in completed_stems:
+                path = resumable_state.state["meshes"]["results"].get(stem, {}).get("path", "")
+                if path and os.path.exists(path):
+                    results[stem] = path
         return results
 
 
@@ -333,6 +440,13 @@ def main() -> int:
         default=os.environ.get("COMFYUI_BASE_URL", "http://127.0.0.1:8188/"),
         help="ComfyUI API base URL",
     )
+    parser.add_argument("--force", "-f", action="store_true", help="Regenerate all meshes (ignore completed)")
+    parser.add_argument(
+        "--force-start",
+        action="store_true",
+        help="Ignore existing checkpoint and start fresh (resumable state cleared)",
+    )
+    parser.add_argument("--list-completed", "-l", action="store_true", help="List completed mesh stems and exit")
     args = parser.parse_args()
 
     gen = Image2MeshGenerator(
@@ -340,11 +454,38 @@ def main() -> int:
         workflow_path=args.workflow,
         output_dir=args.output_dir,
     )
-    results = gen.process_all(args.input_dir)
+
+    resumable_state = None
+    if ENABLE_RESUMABLE_MODE:
+        checkpoint_dir = os.path.normpath(os.path.join(base_dir, "output", "tracking"))
+        script_name = Path(__file__).stem
+        resumable_state = ResumableState(checkpoint_dir, script_name, args.force_start)
+        print(f"Resumable mode enabled - checkpoint: {checkpoint_dir}")
+        if resumable_state.state_file.exists():
+            print(f"Found checkpoint: {resumable_state.state_file}")
+            print(resumable_state.get_progress_summary())
+        else:
+            print("No checkpoint found - starting fresh")
+
+    if args.list_completed:
+        if resumable_state and resumable_state.state["meshes"]["completed"]:
+            print("Completed stems:", sorted(resumable_state.state["meshes"]["completed"]))
+        else:
+            print("No completed meshes in checkpoint.")
+        return 0
+
+    results = gen.process_all(
+        args.input_dir,
+        resumable_state=resumable_state,
+        force_regenerate=args.force,
+    )
     if results:
         print(f"\nGenerated {len(results)} mesh(es):")
         for stem, path in results.items():
             print(f"  {stem}: {path}")
+        if resumable_state:
+            print("Final progress:", resumable_state.get_progress_summary())
+            resumable_state.cleanup()
         return 0
     print("No meshes generated.")
     return 0
