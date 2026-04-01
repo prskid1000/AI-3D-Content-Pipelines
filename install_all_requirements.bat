@@ -60,6 +60,8 @@ call :get_node https://github.com/Comfy-Org/ComfyUI-Manager comfyui-manager
 call :get_node https://github.com/city96/ComfyUI-GGUF ComfyUI-GGUF
 call :get_node https://github.com/1038lab/ComfyUI-RMBG comfyui-rmbg
 call :get_node https://github.com/kijai/ComfyUI-KJNodes comfyui-kjnodes
+call :get_node https://github.com/PozzettiAndrea/ComfyUI-GeometryPack comfyui-geometrypack
+call :get_node https://github.com/LAOGOU-666/Comfyui-Memory_Cleanup comfyui_memory_cleanup
 
 if not exist ".\ComfyUI\custom_nodes\.disabled" mkdir ".\ComfyUI\custom_nodes\.disabled"
 
